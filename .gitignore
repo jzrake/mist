@@ -1,0 +1,41 @@
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# Example executables
+examples/*/advection-1d
+examples/*/burgers-1d
+examples/*/euler-2d
+examples/*/wave-3d-gpu
+
+# Output data files
+*.dat
+*.h5
+*.hdf5
+*.log
+
+# CMake
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compilation database
+compile_commands.json
+
+# Test outputs
+test_*
+tests/test-*
+!tests/test-*.cpp

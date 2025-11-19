@@ -1,0 +1,382 @@
+#pragma once
+
+#include <concepts>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <utility>
+#include <chrono>
+#include <algorithm>
+#include <array>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
+
+namespace mist {
+
+// =============================================================================
+// Physics concept
+// =============================================================================
+
+template<typename P>
+concept Physics = requires(
+    typename P::config_t cfg,
+    typename P::state_t s,
+    typename P::product_t p,
+    double dt,
+    double alpha,
+    int kind
+) {
+    typename P::config_t;
+    typename P::state_t;
+    typename P::product_t;
+
+    { initial_state(cfg) } -> std::same_as<typename P::state_t>;
+    { euler_step(cfg, s, dt) } -> std::same_as<typename P::state_t>;
+    { courant_time(cfg, s) } -> std::same_as<double>;
+    { average(s, s, alpha) } -> std::same_as<typename P::state_t>;
+    { get_product(cfg, s) } -> std::same_as<typename P::product_t>;
+    { get_time(s, kind) } -> std::same_as<double>;
+    { zone_count(s) } -> std::same_as<std::size_t>;
+    { timeseries_sample(cfg, s) } -> std::same_as<std::vector<std::pair<std::string, double>>>;
+    { visit([](const char*, auto&) {}, s) } -> std::same_as<void>;
+    { visit([](const char*, auto&) {}, p) } -> std::same_as<void>;
+};
+
+// =============================================================================
+// Time integrators
+// =============================================================================
+
+template<Physics P>
+typename P::state_t rk1_step(
+    const typename P::config_t& cfg,
+    const typename P::state_t& s0,
+    double dt)
+{
+    return euler_step(cfg, s0, dt);
+}
+
+template<Physics P>
+typename P::state_t rk2_step(
+    const typename P::config_t& cfg,
+    const typename P::state_t& s0,
+    double dt)
+{
+    auto s1 = euler_step(cfg, s0, dt);
+    auto s2 = euler_step(cfg, s1, dt);
+    return average(s0, s2, 0.5);
+}
+
+template<Physics P>
+typename P::state_t rk3_step(
+    const typename P::config_t& cfg,
+    const typename P::state_t& s0,
+    double dt)
+{
+    auto s1 = euler_step(cfg, s0, dt);
+    auto s2 = euler_step(cfg, s1, dt);
+    auto s3 = euler_step(cfg, average(s0, s2, 0.25), dt);
+    return average(s0, s3, 2.0 / 3.0);
+}
+
+// =============================================================================
+// Scheduling policy
+// =============================================================================
+
+enum class scheduling_policy { nearest, exact };
+
+inline scheduling_policy parse_scheduling_policy(const std::string& str) {
+    if (str == "exact") return scheduling_policy::exact;
+    if (str == "nearest") return scheduling_policy::nearest;
+    throw std::runtime_error("scheduling policy must be 'exact' or 'nearest'");
+}
+
+// =============================================================================
+// Scheduled output abstraction
+// =============================================================================
+
+template<typename StateT>
+class scheduled_output {
+public:
+    double interval;
+    int interval_kind;
+    scheduling_policy policy;
+    double* next_time;
+    int* count;
+    std::function<void(const StateT&)> callback;
+
+    void validate() const {
+        if (policy == scheduling_policy::exact && interval_kind != 0) {
+            throw std::runtime_error("exact scheduling requires interval_kind = 0");
+        }
+    }
+
+    template<typename RKStepFn>
+    void handle_exact_output(double t0, double t1, const StateT& state, RKStepFn&& rk_step) {
+        if (policy == scheduling_policy::exact && interval_kind == 0) {
+            if (t0 < *next_time && t1 >= *next_time) {
+                auto state_exact = rk_step(state, *next_time - t0);
+                (*count)++;
+                *next_time += interval;
+                if (callback) callback(state_exact);
+            }
+        }
+    }
+
+    template<typename GetTimeFn>
+    void handle_nearest_output(const StateT& state, GetTimeFn&& get_time) {
+        if (policy == scheduling_policy::nearest) {
+            if (get_time(state, interval_kind) >= *next_time) {
+                (*count)++;
+                *next_time += interval;
+                if (callback) callback(state);
+            }
+        }
+    }
+};
+
+// =============================================================================
+// Driver state
+// =============================================================================
+
+struct driver_state_t {
+    int iteration = 0;
+    int message_count = 0;
+    int checkpoint_count = 0;
+    int products_count = 0;
+    int timeseries_count = 0;
+
+    double next_message_time = 0.0;
+    double next_checkpoint_time = 0.0;
+    double next_products_time = 0.0;
+    double next_timeseries_time = 0.0;
+
+    std::vector<std::pair<std::string, std::vector<double>>> timeseries_data;
+};
+
+// =============================================================================
+// Driver configuration
+// =============================================================================
+
+template<Physics P>
+struct driver_config {
+    typename P::config_t physics;
+
+    int rk_order = 2;
+    double cfl = 0.4;
+
+    double t_final = 1.0;
+    int max_iter = -1;
+
+    double message_interval = 0.1;
+    int message_interval_kind = 0;
+    std::string message_scheduling = "nearest";
+
+    double checkpoint_interval = 1.0;
+    int checkpoint_interval_kind = 0;
+    std::string checkpoint_scheduling = "nearest";
+
+    double products_interval = 0.1;
+    int products_interval_kind = 0;
+    std::string products_scheduling = "exact";
+
+    double timeseries_interval = 0.01;
+    int timeseries_interval_kind = 0;
+    std::string timeseries_scheduling = "exact";
+};
+
+// =============================================================================
+// Output functions (user implements these)
+// =============================================================================
+
+inline void write_iteration_message(const std::string& message) {
+    std::cout << message << std::endl;
+}
+
+template<Physics P>
+void write_checkpoint(int output_num, const typename P::state_t& state, const driver_state_t& driver_state);
+
+template<Physics P>
+void write_products(int output_num, const typename P::state_t& state, const typename P::product_t& product);
+
+inline void write_timeseries(const std::vector<std::pair<std::string, std::vector<double>>>& timeseries_data);
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+inline void accumulate_timeseries_sample(
+    driver_state_t& driver_state,
+    const std::vector<std::pair<std::string, double>>& sample)
+{
+    for (const auto& [name, value] : sample) {
+        auto it = std::find_if(
+            driver_state.timeseries_data.begin(),
+            driver_state.timeseries_data.end(),
+            [&name](const auto& col) { return col.first == name; }
+        );
+
+        if (it != driver_state.timeseries_data.end()) {
+            it->second.push_back(value);
+        } else {
+            driver_state.timeseries_data.push_back({name, {value}});
+        }
+    }
+}
+
+inline double get_wall_time() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// =============================================================================
+// Main driver
+// =============================================================================
+
+template<Physics P>
+typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_state) {
+    using state_t = typename P::state_t;
+
+    auto rk_step = [&](const state_t& s, double dt) -> state_t {
+        switch (cfg.rk_order) {
+            case 1: return rk1_step<P>(cfg.physics, s, dt);
+            case 2: return rk2_step<P>(cfg.physics, s, dt);
+            case 3: return rk3_step<P>(cfg.physics, s, dt);
+            default: throw std::runtime_error("rk_order must be 1, 2, or 3");
+        }
+    };
+
+    auto state = initial_state(cfg.physics);
+
+    // Initialize scheduling on first run
+    if (driver_state.iteration == 0) {
+        driver_state.next_message_time = cfg.message_interval;
+        driver_state.next_checkpoint_time = cfg.checkpoint_interval;
+        driver_state.next_products_time = cfg.products_interval;
+        driver_state.next_timeseries_time = cfg.timeseries_interval;
+    }
+
+    // Session state
+    double last_message_wall_time = get_wall_time();
+    int last_message_iteration = driver_state.iteration;
+
+    // Iteration message output
+    auto message_output = scheduled_output<state_t>(
+        cfg.message_interval,
+        cfg.message_interval_kind,
+        parse_scheduling_policy(cfg.message_scheduling),
+        &driver_state.next_message_time,
+        &driver_state.message_count,
+        [&](const state_t& s) {
+            double wall_now = get_wall_time();
+            double wall_elapsed = wall_now - last_message_wall_time;
+            int iter_elapsed = driver_state.iteration - last_message_iteration;
+            double mzps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(s)) / (wall_elapsed * 1e6) : 0.0;
+
+            std::ostringstream oss;
+            oss << "[" << std::setw(6) << std::setfill('0') << driver_state.iteration << "] ";
+            oss << "t=" << std::fixed << std::setprecision(5) << get_time(s, 0) << " (";
+
+            for (int kind = 1; kind <= 10; ++kind) {
+                try {
+                    double t = get_time(s, kind);
+                    if (kind > 1) oss << " ";
+                    oss << kind << ":" << std::fixed << std::setprecision(4) << t;
+                } catch (const std::out_of_range&) {
+                    break;
+                }
+            }
+            oss << ") Mzps=" << std::fixed << std::setprecision(3) << mzps;
+
+            write_iteration_message(oss.str());
+            last_message_wall_time = wall_now;
+            last_message_iteration = driver_state.iteration;
+        });
+
+    // Checkpoint output
+    auto checkpoint_output = scheduled_output<state_t>(
+        cfg.checkpoint_interval,
+        cfg.checkpoint_interval_kind,
+        parse_scheduling_policy(cfg.checkpoint_scheduling),
+        &driver_state.next_checkpoint_time,
+        &driver_state.checkpoint_count,
+        [&](const state_t& s) {
+            write_checkpoint<P>(driver_state.checkpoint_count, s, driver_state);
+        });
+
+    // Product output
+    auto products_output = scheduled_output<state_t>(
+        cfg.products_interval,
+        cfg.products_interval_kind,
+        parse_scheduling_policy(cfg.products_scheduling),
+        &driver_state.next_products_time,
+        &driver_state.products_count,
+        [&](const state_t& s) {
+            write_products<P>(driver_state.products_count, s, get_product(cfg.physics, s));
+        });
+
+    // Timeseries output
+    auto timeseries_output = scheduled_output<state_t>(
+        cfg.timeseries_interval,
+        cfg.timeseries_interval_kind,
+        parse_scheduling_policy(cfg.timeseries_scheduling),
+        &driver_state.next_timeseries_time,
+        &driver_state.timeseries_count,
+        [&](const state_t& s) {
+            accumulate_timeseries_sample(driver_state, timeseries_sample(cfg.physics, s));
+            write_timeseries(driver_state.timeseries_data);
+        });
+
+    // Collect outputs
+    std::array<scheduled_output<state_t>, 4> outputs = {{
+        message_output,
+        checkpoint_output,
+        products_output,
+        timeseries_output
+    }};
+
+    for (auto& output : outputs) {
+        output.validate();
+    }
+
+    // Initial outputs at t=0
+    if (driver_state.iteration == 0) {
+        for (std::size_t i = 1; i < outputs.size(); ++i) {
+            outputs[i].callback(state);
+        }
+    }
+
+    // Main loop
+    while (true) {
+        double t0 = get_time(state, 0);
+
+        if (t0 >= cfg.t_final) break;
+        if (cfg.max_iter > 0 && driver_state.iteration >= cfg.max_iter) break;
+
+        double dt = cfg.cfl * courant_time(cfg.physics, state);
+        double t1 = t0 + dt;
+
+        for (auto& output : outputs) {
+            output.handle_exact_output(t0, t1, state, rk_step);
+        }
+
+        state = rk_step(state, dt);
+        driver_state.iteration++;
+
+        for (auto& output : outputs) {
+            output.handle_nearest_output(state,
+                [](const auto& s, int kind) { return get_time(s, kind); });
+        }
+    }
+
+    return state;
+}
+
+template<Physics P>
+typename P::state_t run(const driver_config<P>& cfg) {
+    driver_state_t driver_state;
+    return run(cfg, driver_state);
+}
+
+} // namespace mist
