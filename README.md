@@ -2,6 +2,8 @@
 
 A lightweight C++20 header-only library for deploy-anywhere array transformations and physics simulations.
 
+Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library with similar goals for computational astrophysics.
+
 ## Features
 
 - **Core library** (`mist/core.hpp`): Multi-dimensional arrays, index spaces, transforms, and parallel execution
@@ -21,18 +23,6 @@ git clone https://github.com/yourusername/mist.git
 cd mist/examples/advection-1d
 make
 ./advection-1d
-```
-
-## Project Structure
-
-```
-mist/
-├── include/mist/
-│   ├── core.hpp      # Multi-dimensional arrays and transforms
-│   └── driver.hpp    # Time-stepping driver for physics simulations
-├── examples/
-│   └── advection-1d/ # Example: 1D linear advection with scheduled outputs
-└── README.md         # Complete API documentation
 ```
 
 ## CUDA Compatibility
@@ -374,10 +364,3 @@ The driver uses adaptive timesteps from `courant_time(cfg, state)` multiplied by
 2. `iteration >= max_iter` (if `max_iter > 0`)
 
 The timestep is never adjusted to hit `t_final` exactly - the simulation simply stops when the termination condition is met. Exact-policy outputs must use `time_kind = 0`.
-
-## Initial Outputs (at t=0)
-
-- ✅ **Checkpoints:** Yes - `chkpt.0000.h5`
-- ✅ **Products:** Yes - `prods.0000.h5`
-- ✅ **Timeseries:** Yes - first data point
-- ❌ **Iteration messages:** No - starts after first iteration
