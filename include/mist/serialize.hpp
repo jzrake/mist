@@ -68,13 +68,13 @@ using vector_element_type_t = typename vector_element_type<T>::type;
 // =============================================================================
 
 template<typename T>
-concept HasSerializeFields = requires(T t) {
-    { t.serialize_fields() } -> std::same_as<decltype(t.serialize_fields())>;
+concept HasFields = requires(T t) {
+    { t.fields() } -> std::same_as<decltype(t.fields())>;
 };
 
 template<typename T>
-concept HasConstSerializeFields = requires(const T t) {
-    { t.serialize_fields() } -> std::same_as<decltype(t.serialize_fields())>;
+concept HasConstFields = requires(const T t) {
+    { t.fields() } -> std::same_as<decltype(t.fields())>;
 };
 
 // =============================================================================
@@ -86,6 +86,7 @@ concept ArchiveWriter = requires(A& ar, const char* name) {
     { ar.write_scalar(name, int{}) } -> std::same_as<void>;
     { ar.write_scalar(name, double{}) } -> std::same_as<void>;
     { ar.begin_group(name) } -> std::same_as<void>;
+    { ar.begin_group() } -> std::same_as<void>;
     { ar.end_group() } -> std::same_as<void>;
 };
 
@@ -94,7 +95,9 @@ concept ArchiveReader = requires(A& ar, const char* name, int& i, double& d) {
     { ar.read_scalar(name, i) } -> std::same_as<void>;
     { ar.read_scalar(name, d) } -> std::same_as<void>;
     { ar.begin_group(name) } -> std::same_as<void>;
+    { ar.begin_group() } -> std::same_as<void>;
     { ar.end_group() } -> std::same_as<void>;
+    { ar.count_groups(name) } -> std::same_as<std::size_t>;
 };
 
 // =============================================================================
@@ -116,11 +119,11 @@ template<ArchiveWriter A, typename T>
 void serialize(A& ar, const char* name, const std::vector<T>& value);
 
 template<ArchiveWriter A, typename T>
-    requires HasConstSerializeFields<T>
+    requires HasConstFields<T>
 void serialize(A& ar, const char* name, const std::vector<T>& value);
 
 template<ArchiveWriter A, typename T>
-    requires HasConstSerializeFields<T>
+    requires HasConstFields<T>
 void serialize(A& ar, const char* name, const T& value);
 
 // =============================================================================
@@ -142,11 +145,11 @@ template<ArchiveReader A, typename T>
 void deserialize(A& ar, const char* name, std::vector<T>& value);
 
 template<ArchiveReader A, typename T>
-    requires HasSerializeFields<T>
+    requires HasFields<T>
 void deserialize(A& ar, const char* name, std::vector<T>& value);
 
 template<ArchiveReader A, typename T>
-    requires HasSerializeFields<T>
+    requires HasFields<T>
 void deserialize(A& ar, const char* name, T& value);
 
 // =============================================================================
@@ -169,39 +172,39 @@ void serialize(A& ar, const char* name, const std::string& value) {
 // vec_t<T, N>
 template<ArchiveWriter A, typename T, std::size_t N>
 void serialize(A& ar, const char* name, const vec_t<T, N>& value) {
-    ar.write_vec(name, value);
+    ar.write_array(name, value);
 }
 
 // std::vector<T> where T is arithmetic
 template<ArchiveWriter A, typename T>
     requires std::is_arithmetic_v<T>
 void serialize(A& ar, const char* name, const std::vector<T>& value) {
-    ar.write_scalar_vector(name, value);
+    ar.write_array(name, value);
 }
 
 // std::vector<T> where T is a compound type
 template<ArchiveWriter A, typename T>
-    requires HasConstSerializeFields<T>
+    requires HasConstFields<T>
 void serialize(A& ar, const char* name, const std::vector<T>& value) {
-    ar.begin_compound_vector(name, value.size());
-    for (std::size_t i = 0; i < value.size(); ++i) {
-        ar.begin_compound_vector_element(i);
+    ar.begin_group(name);
+    for (const auto& elem : value) {
+        ar.begin_group();
         std::apply([&ar](auto&&... fields) {
             (serialize(ar, fields.name, fields.value), ...);
-        }, value[i].serialize_fields());
-        ar.end_compound_vector_element();
+        }, elem.fields());
+        ar.end_group();
     }
-    ar.end_compound_vector();
+    ar.end_group();
 }
 
-// Compound types with serialize_fields()
+// Compound types with fields()
 template<ArchiveWriter A, typename T>
-    requires HasConstSerializeFields<T>
+    requires HasConstFields<T>
 void serialize(A& ar, const char* name, const T& value) {
     ar.begin_group(name);
     std::apply([&ar](auto&&... fields) {
         (serialize(ar, fields.name, fields.value), ...);
-    }, value.serialize_fields());
+    }, value.fields());
     ar.end_group();
 }
 
@@ -225,40 +228,41 @@ void deserialize(A& ar, const char* name, std::string& value) {
 // vec_t<T, N>
 template<ArchiveReader A, typename T, std::size_t N>
 void deserialize(A& ar, const char* name, vec_t<T, N>& value) {
-    ar.read_vec(name, value);
+    ar.read_array(name, value);
 }
 
 // std::vector<T> where T is arithmetic
 template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
 void deserialize(A& ar, const char* name, std::vector<T>& value) {
-    ar.read_scalar_vector(name, value);
+    ar.read_array(name, value);
 }
 
 // std::vector<T> where T is a compound type
 template<ArchiveReader A, typename T>
-    requires HasSerializeFields<T>
+    requires HasFields<T>
 void deserialize(A& ar, const char* name, std::vector<T>& value) {
-    std::size_t count = ar.begin_compound_vector(name);
+    std::size_t count = ar.count_groups(name);
+    ar.begin_group(name);
     value.resize(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        ar.begin_compound_vector_element(i);
+    for (auto& elem : value) {
+        ar.begin_group();
         std::apply([&ar](auto&&... fields) {
             (deserialize(ar, fields.name, fields.value), ...);
-        }, value[i].serialize_fields());
-        ar.end_compound_vector_element();
+        }, elem.fields());
+        ar.end_group();
     }
-    ar.end_compound_vector();
+    ar.end_group();
 }
 
-// Compound types with serialize_fields()
+// Compound types with fields()
 template<ArchiveReader A, typename T>
-    requires HasSerializeFields<T>
+    requires HasFields<T>
 void deserialize(A& ar, const char* name, T& value) {
     ar.begin_group(name);
     std::apply([&ar](auto&&... fields) {
         (deserialize(ar, fields.name, fields.value), ...);
-    }, value.serialize_fields());
+    }, value.fields());
     ar.end_group();
 }
 

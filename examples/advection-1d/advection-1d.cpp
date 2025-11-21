@@ -3,6 +3,9 @@
 #include <vector>
 #include <cmath>
 #include "mist/core.hpp"
+#include "mist/serialize.hpp"
+#include "mist/ascii_reader.hpp"
+#include "mist/ascii_writer.hpp"
 #include "mist/driver.hpp"
 
 using namespace mist;
@@ -15,9 +18,25 @@ struct advection_1d {
 
     // Configuration: runtime parameters
     struct config_t {
-        unsigned int num_zones;
-        double domain_length;
-        double advection_velocity;
+        unsigned int num_zones = 100;
+        double domain_length = 1.0;
+        double advection_velocity = 1.0;
+
+        auto fields() const {
+            return std::make_tuple(
+                field("num_zones", num_zones),
+                field("domain_length", domain_length),
+                field("advection_velocity", advection_velocity)
+            );
+        }
+
+        auto fields() {
+            return std::make_tuple(
+                field("num_zones", num_zones),
+                field("domain_length", domain_length),
+                field("advection_velocity", advection_velocity)
+            );
+        }
     };
 
     // State: conservative variables + metadata
@@ -25,6 +44,20 @@ struct advection_1d {
         std::vector<double> conserved;
         double time;
         index_space_t<1> grid;
+
+        auto fields() const {
+            return std::make_tuple(
+                field("conserved", conserved),
+                field("time", time)
+            );
+        }
+
+        auto fields() {
+            return std::make_tuple(
+                field("conserved", conserved),
+                field("time", time)
+            );
+        }
     };
 
     // Product: derived quantities
@@ -33,6 +66,24 @@ struct advection_1d {
         double total_mass;
         double min_value;
         double max_value;
+
+        auto fields() const {
+            return std::make_tuple(
+                field("primitive", primitive),
+                field("total_mass", total_mass),
+                field("min_value", min_value),
+                field("max_value", max_value)
+            );
+        }
+
+        auto fields() {
+            return std::make_tuple(
+                field("primitive", primitive),
+                field("total_mass", total_mass),
+                field("min_value", min_value),
+                field("max_value", max_value)
+            );
+        }
     };
 };
 
@@ -155,143 +206,39 @@ auto timeseries_sample(
     };
 }
 
-// Visitor for State
-template<typename Visitor>
-void visit(Visitor&& v, advection_1d::state_t& s) {
-    v("conserved", s.conserved);
-    v("time", s.time);
-}
-
-// Visitor for Product
-template<typename Visitor>
-void visit(Visitor&& v, advection_1d::product_t& p) {
-    v("primitive", p.primitive);
-    v("total_mass", p.total_mass);
-    v("min_value", p.min_value);
-    v("max_value", p.max_value);
-}
-
-// =============================================================================
-// Output function implementations
-// =============================================================================
-
-namespace mist {
-
-template<>
-void write_checkpoint<advection_1d>(
-    int output_num,
-    const advection_1d::state_t& state,
-    const driver_state_t& driver_state)
-{
-    char filename[64];
-    std::snprintf(filename, sizeof(filename), "chkpt.%04d.dat", output_num);
-    std::ofstream file(filename);
-    
-    file << "# Checkpoint " << output_num << "\n";
-    file << "# time = " << state.time << "\n";
-    file << "# iteration = " << driver_state.iteration << "\n";
-    
-    for (const auto& u : state.conserved) {
-        file << u << "\n";
-    }
-}
-
-template<>
-void write_products<advection_1d>(
-    int output_num,
-    const advection_1d::state_t& state,
-    const advection_1d::product_t& product)
-{
-    char filename[64];
-    std::snprintf(filename, sizeof(filename), "prods.%04d.dat", output_num);
-    std::ofstream file(filename);
-    
-    file << "# Product " << output_num << "\n";
-    file << "# time = " << state.time << "\n";
-    file << "# total_mass = " << product.total_mass << "\n";
-    file << "# min_value = " << product.min_value << "\n";
-    file << "# max_value = " << product.max_value << "\n";
-    
-    for (const auto& u : product.primitive) {
-        file << u << "\n";
-    }
-}
-
-void write_timeseries(
-    const std::vector<std::pair<std::string, std::vector<double>>>& timeseries_data)
-{
-    std::ofstream file("timeseries.dat");
-    
-    // Write header
-    file << "# ";
-    for (const auto& [name, values] : timeseries_data) {
-        file << name << " ";
-    }
-    file << "\n";
-    
-    // Write data rows
-    if (!timeseries_data.empty()) {
-        std::size_t num_samples = timeseries_data[0].second.size();
-        for (std::size_t i = 0; i < num_samples; ++i) {
-            for (const auto& [name, values] : timeseries_data) {
-                if (i < values.size()) {
-                    file << values[i] << " ";
-                }
-            }
-            file << "\n";
-        }
-    }
-}
-
-} // namespace mist
-
 // =============================================================================
 // Main driver
 // =============================================================================
 
-int main() {
+int main(int argc, char* argv[]) {
     static_assert(Physics<advection_1d>, "advection_1d must satisfy Physics concept");
 
     std::cout << "=== 1D Linear Advection Demo (Mist Driver) ===\n\n";
 
-    // Setup configuration
-    driver_config<advection_1d> cfg;
-    cfg.physics = {
-        .num_zones = 200,
-        .domain_length = 1.0,
-        .advection_velocity = 1.0
-    };
+    // Setup configuration with defaults
+    config<advection_1d> cfg;
 
-    // Driver settings
-    cfg.rk_order = 3;
-    cfg.cfl = 0.5;
-    cfg.t_final = 2.0;
-    cfg.max_iter = -1;
+    // Read config file if provided
+    if (argc > 1) {
+        std::ifstream file(argv[1]);
+        if (!file) {
+            std::cerr << "Error: cannot open config file '" << argv[1] << "'\n";
+            return 1;
+        }
+        try {
+            ascii_reader reader(file);
+            deserialize(reader, "config", cfg);
+        } catch (const std::exception& e) {
+            std::cerr << "Error parsing config: " << e.what() << "\n";
+            return 1;
+        }
+    }
 
-    // Output scheduling
-    cfg.message_interval = 0.1;
-    cfg.message_interval_kind = 0;
-    cfg.message_scheduling = "nearest";
-
-    cfg.checkpoint_interval = 0.5;
-    cfg.checkpoint_interval_kind = 0;
-    cfg.checkpoint_scheduling = "nearest";
-
-    cfg.products_interval = 0.2;
-    cfg.products_interval_kind = 0;
-    cfg.products_scheduling = "exact";
-
-    cfg.timeseries_interval = 0.05;
-    cfg.timeseries_interval_kind = 0;
-    cfg.timeseries_scheduling = "exact";
-
+    // Print configuration before running
     std::cout << "Configuration:\n";
-    std::cout << "  Grid zones: " << cfg.physics.num_zones << "\n";
-    std::cout << "  Domain length: " << cfg.physics.domain_length << "\n";
-    std::cout << "  Advection velocity: " << cfg.physics.advection_velocity << "\n";
-    std::cout << "  RK order: " << cfg.rk_order << "\n";
-    std::cout << "  CFL: " << cfg.cfl << "\n";
-    std::cout << "  Final time: " << cfg.t_final << "\n\n";
+    ascii_writer writer(std::cout);
+    serialize(writer, "config", cfg);
+    std::cout << "\n";
 
     // Run simulation
     auto final_state = run(cfg);

@@ -58,11 +58,11 @@ public:
     }
 
     // =========================================================================
-    // vec_t<T, N>
+    // Arrays (fixed-size vec_t)
     // =========================================================================
 
     template<typename T, std::size_t N>
-    void read_vec(const char* name, vec_t<T, N>& value) {
+    void read_array(const char* name, vec_t<T, N>& value) {
         skip_whitespace_and_comments();
         std::string field_name = read_identifier();
         if (field_name != name) {
@@ -87,12 +87,12 @@ public:
     }
 
     // =========================================================================
-    // std::vector<T> where T is arithmetic
+    // Arrays (dynamic std::vector)
     // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_scalar_vector(const char* name, std::vector<T>& value) {
+    void read_array(const char* name, std::vector<T>& value) {
         skip_whitespace_and_comments();
         std::string field_name = read_identifier();
         if (field_name != name) {
@@ -132,53 +132,7 @@ public:
     }
 
     // =========================================================================
-    // Compound vector support
-    // =========================================================================
-
-    std::size_t begin_compound_vector(const char* name) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + 
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('{');
-        
-        // Count elements by scanning ahead
-        std::streampos start_pos = is_.tellg();
-        std::size_t count = count_compound_elements();
-        is_.seekg(start_pos);
-        
-        std::string prev_group = current_group_;
-        current_group_ = current_group_.empty() ? name : current_group_ + "/" + name;
-        group_stack_.push_back(prev_group);
-        
-        return count;
-    }
-
-    void end_compound_vector() {
-        skip_whitespace_and_comments();
-        expect_char('}');
-        if (!group_stack_.empty()) {
-            current_group_ = group_stack_.back();
-            group_stack_.pop_back();
-        }
-    }
-
-    void begin_compound_vector_element([[maybe_unused]] std::size_t index) {
-        skip_whitespace_and_comments();
-        expect_char('{');
-    }
-
-    void end_compound_vector_element() {
-        skip_whitespace_and_comments();
-        expect_char('}');
-    }
-
-    // =========================================================================
-    // Nested structure support
+    // Groups (named and anonymous)
     // =========================================================================
 
     void begin_group(const char* name) {
@@ -197,6 +151,15 @@ public:
         group_stack_.push_back(prev_group);
     }
 
+    void begin_group() {
+        skip_whitespace_and_comments();
+        expect_char('{');
+        
+        std::string prev_group = current_group_;
+        current_group_ = current_group_ + "[]";
+        group_stack_.push_back(prev_group);
+    }
+
     void end_group() {
         skip_whitespace_and_comments();
         expect_char('}');
@@ -204,6 +167,60 @@ public:
             current_group_ = group_stack_.back();
             group_stack_.pop_back();
         }
+    }
+
+    // =========================================================================
+    // Count anonymous groups inside a named group (for compound vectors)
+    // =========================================================================
+
+    std::size_t count_groups(const char* name) {
+        skip_whitespace_and_comments();
+        
+        // Save position
+        std::streampos start_pos = is_.tellg();
+        
+        // Read and verify group name
+        std::string field_name = read_identifier();
+        if (field_name != name) {
+            throw std::runtime_error(
+                "Expected group '" + std::string(name) + "' but found '" + field_name + 
+                "' in group '" + current_group_ + "'");
+        }
+        skip_whitespace();
+        expect_char('{');
+        
+        // Count anonymous groups
+        std::size_t count = 0;
+        int depth = 0;
+        
+        while (is_) {
+            skip_whitespace_and_comments();
+            char c = peek_char();
+            
+            if (c == '{') {
+                get_char();
+                if (depth == 0) {
+                    count++;
+                }
+                depth++;
+            } else if (c == '}') {
+                if (depth == 0) {
+                    // End of containing group
+                    break;
+                }
+                get_char();
+                depth--;
+            } else if (c == std::char_traits<char>::eof()) {
+                break;
+            } else {
+                get_char();
+            }
+        }
+        
+        // Restore position
+        is_.seekg(start_pos);
+        
+        return count;
     }
 
 private:
@@ -309,43 +326,6 @@ private:
             }
         }
         return result;
-    }
-
-    std::size_t count_compound_elements() {
-        // Count brace pairs at the current nesting level
-        std::size_t count = 0;
-        int depth = 0;
-        bool in_element = false;
-        
-        while (is_) {
-            skip_whitespace_and_comments();
-            char c = peek_char();
-            
-            if (c == '{') {
-                get_char();
-                if (depth == 0) {
-                    in_element = true;
-                }
-                depth++;
-            } else if (c == '}') {
-                if (depth == 0) {
-                    // End of compound vector
-                    break;
-                }
-                get_char();
-                depth--;
-                if (depth == 0 && in_element) {
-                    count++;
-                    in_element = false;
-                }
-            } else if (c == std::char_traits<char>::eof()) {
-                break;
-            } else {
-                get_char();
-            }
-        }
-        
-        return count;
     }
 };
 

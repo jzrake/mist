@@ -15,7 +15,7 @@ namespace mist {
 class ascii_writer {
 public:
     explicit ascii_writer(std::ostream& os, int indent_size = 4)
-        : os_(os), indent_size_(indent_size), indent_level_(0), need_newline_(false) {}
+        : os_(os), indent_size_(indent_size), indent_level_(0) {}
 
     // =========================================================================
     // Scalar types
@@ -38,11 +38,11 @@ public:
     }
 
     // =========================================================================
-    // vec_t<T, N> - inline comma-separated arrays
+    // Arrays (fixed-size vec_t)
     // =========================================================================
 
     template<typename T, std::size_t N>
-    void write_vec(const char* name, const vec_t<T, N>& value) {
+    void write_array(const char* name, const vec_t<T, N>& value) {
         write_indent();
         os_ << name << " = [";
         for (std::size_t i = 0; i < N; ++i) {
@@ -53,12 +53,12 @@ public:
     }
 
     // =========================================================================
-    // std::vector<T> where T is arithmetic - inline comma-separated arrays
+    // Arrays (dynamic std::vector)
     // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_scalar_vector(const char* name, const std::vector<T>& value) {
+    void write_array(const char* name, const std::vector<T>& value) {
         write_indent();
         os_ << name << " = [";
         for (std::size_t i = 0; i < value.size(); ++i) {
@@ -69,40 +69,18 @@ public:
     }
 
     // =========================================================================
-    // Compound vector support
-    // =========================================================================
-
-    void begin_compound_vector(const char* name, [[maybe_unused]] std::size_t count) {
-        write_indent();
-        os_ << name << " {\n";
-        indent_level_++;
-    }
-
-    void end_compound_vector() {
-        indent_level_--;
-        write_indent();
-        os_ << "}\n";
-    }
-
-    void begin_compound_vector_element([[maybe_unused]] std::size_t index) {
-        write_indent();
-        os_ << "{\n";
-        indent_level_++;
-    }
-
-    void end_compound_vector_element() {
-        indent_level_--;
-        write_indent();
-        os_ << "}\n";
-    }
-
-    // =========================================================================
-    // Nested structure support
+    // Groups (named and anonymous)
     // =========================================================================
 
     void begin_group(const char* name) {
         write_indent();
         os_ << name << " {\n";
+        indent_level_++;
+    }
+
+    void begin_group() {
+        write_indent();
+        os_ << "{\n";
         indent_level_++;
     }
 
@@ -116,7 +94,6 @@ private:
     std::ostream& os_;
     int indent_size_;
     int indent_level_;
-    bool need_newline_;
 
     void write_indent() {
         for (int i = 0; i < indent_level_ * indent_size_; ++i) {

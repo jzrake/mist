@@ -138,8 +138,8 @@ Physics modules must satisfy the `Physics` concept by providing:
 
 **Required types:**
 - `config_t` - Runtime configuration (grid size, physical parameters, etc.)
-- `state_t` - Conservative state variables (density, momentum, energy, etc.)
-- `product_t` - Derived diagnostic quantities (velocity, pressure, etc.)
+- `state_t` - Conservative state variables (density, momentum, energy, etc.). Must implement `fields()`.
+- `product_t` - Derived diagnostic quantities (velocity, pressure, etc.). Must implement `fields()`.
 
 **Required functions:**
 - `initial_state(config_t) -> state_t` - Generate initial conditions
@@ -154,8 +154,6 @@ Physics modules must satisfy the `Physics` concept by providing:
   - **All time kinds must increase monotonically** during simulation
   - **Must throw `std::out_of_range`** if `kind` is not valid for this physics module
 - `zone_count(state_t) -> std::size_t` - Number of computational zones (for performance metrics)
-- `visit(func, state_t)` - Apply visitor function to all state fields
-- `visit(func, product_t)` - Apply visitor function to all product fields
 - `timeseries_sample(config_t, state_t) -> std::vector<std::pair<std::string, double>>` - Compute timeseries measurements
   - Returns a vector of (column_name, value) pairs
   - Column names define the available timeseries measurements
@@ -169,7 +167,7 @@ The driver provides Strong Stability Preserving (SSP) Runge-Kutta methods:
 - `rk2_step` - SSP-RK2 (2nd order)
 - `rk3_step` - SSP-RK3 (3rd order)
 
-Selected via `driver_config::rk_order` (1, 2, or 3).
+Selected via `driver::config_t::rk_order` (1, 2, or 3).
 
 ## Driver State
 
@@ -227,6 +225,53 @@ When restarting from a checkpoint:
 - Scheduled output times continue from saved values
 - Iteration count continues from saved value
 - Session state is initialized fresh (e.g., wall-clock timing resets for new session)
+
+## Configuration Structure
+
+The driver uses a two-level configuration structure separating driver settings from physics settings:
+
+```cpp
+namespace driver {
+    struct config_t {
+        int rk_order = 2;
+        double cfl = 0.4;
+        double t_final = 1.0;
+        int max_iter = -1;
+        // ... output scheduling settings
+    };
+}
+
+template<Physics P>
+struct config {
+    driver::config_t driver;
+    typename P::config_t physics;
+};
+```
+
+**Config file format:**
+```
+config {
+    driver {
+        rk_order = 3
+        cfl = 0.5
+        t_final = 2.0
+        // ...
+    }
+    physics {
+        // Physics-specific settings
+    }
+}
+```
+
+**Driver settings (`driver::config_t`):**
+- `rk_order` - Runge-Kutta order (1, 2, or 3)
+- `cfl` - CFL factor for timestep calculation
+- `t_final` - Final simulation time
+- `max_iter` - Maximum iterations (-1 for unlimited)
+- `message_interval`, `message_interval_kind`, `message_scheduling` - Iteration message settings
+- `checkpoint_interval`, `checkpoint_interval_kind`, `checkpoint_scheduling` - Checkpoint settings
+- `products_interval`, `products_interval_kind`, `products_scheduling` - Product output settings
+- `timeseries_interval`, `timeseries_interval_kind`, `timeseries_scheduling` - Timeseries settings
 
 ## Scheduled Outputs
 
@@ -399,24 +444,39 @@ void deserialize(A& archive, const char* name, T& obj);
 
 ## Archive Concept
 
-An archive is any type that can read/write primitive data and supports hierarchical structure:
+Archives must implement separate reader and writer interfaces:
 
 ```cpp
 template<typename A>
-concept Archive = requires(A& ar, const char* name, double value) {
-    { ar.write_scalar(name, value) } -> std::same_as<void>;
-    { ar.read_scalar(name, value) } -> std::same_as<void>;
-    { ar.write_array(name, ptr, size) } -> std::same_as<void>;
-    { ar.read_array(name, ptr, size) } -> std::same_as<void>;
-    { ar.enter_group(name) } -> std::same_as<void>;
-    { ar.exit_group() } -> std::same_as<void>;
+concept ArchiveWriter = requires(A& ar, const char* name) {
+    { ar.write_scalar(name, int{}) } -> std::same_as<void>;
+    { ar.write_scalar(name, double{}) } -> std::same_as<void>;
+    { ar.write_string(name, std::string{}) } -> std::same_as<void>;
+    { ar.write_array(name, vec_t<double, 3>{}) } -> std::same_as<void>;
+    { ar.write_array(name, std::vector<double>{}) } -> std::same_as<void>;
+    { ar.begin_group(name) } -> std::same_as<void>;
+    { ar.begin_group() } -> std::same_as<void>;  // anonymous group
+    { ar.end_group() } -> std::same_as<void>;
+};
+
+template<typename A>
+concept ArchiveReader = requires(A& ar, const char* name, int& i, double& d) {
+    { ar.read_scalar(name, i) } -> std::same_as<void>;
+    { ar.read_scalar(name, d) } -> std::same_as<void>;
+    { ar.read_string(name, std::string&) } -> std::same_as<void>;
+    { ar.read_array(name, vec_t<double, 3>&) } -> std::same_as<void>;
+    { ar.read_array(name, std::vector<double>&) } -> std::same_as<void>;
+    { ar.begin_group(name) } -> std::same_as<void>;
+    { ar.begin_group() } -> std::same_as<void>;  // anonymous group
+    { ar.end_group() } -> std::same_as<void>;
+    { ar.count_groups(name) } -> std::same_as<std::size_t>;
 };
 ```
 
 **Archive implementations:**
 - `ascii_writer` / `ascii_reader` - Human-readable text format
-- `binary_writer` / `binary_reader` - Compact binary format
-- `hdf5_writer` / `hdf5_reader` - HDF5 hierarchical data format
+- `binary_writer` / `binary_reader` - Compact binary format (planned)
+- `hdf5_writer` / `hdf5_reader` - HDF5 hierarchical data format (planned)
 
 ## Serializable Types
 
@@ -426,11 +486,11 @@ The framework automatically handles:
 2. **Strings**: `std::string` (quoted with escape sequences)
 3. **Static vectors**: `vec_t<T, N>` where `T` is arithmetic
 4. **Dynamic vectors**: `std::vector<T>` where `T` is serializable
-5. **User-defined types**: Any type with `serialize_fields()` method
+5. **User-defined types**: Any type with `fields()` method
 
 ## Making Types Serializable
 
-Define both const and non-const versions of `serialize_fields()`:
+Define both const and non-const versions of `fields()`:
 
 ```cpp
 struct particle_t {
@@ -438,7 +498,7 @@ struct particle_t {
     vec_t<double, 3> velocity;
     double mass;
     
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("position", position),
             field("velocity", velocity),
@@ -446,7 +506,7 @@ struct particle_t {
         );
     }
     
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("position", position),
             field("velocity", velocity),
@@ -529,7 +589,7 @@ struct grid_config_t {
     vec_t<double, 3> domain_min;
     vec_t<double, 3> domain_max;
     
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("resolution", resolution),
             field("domain_min", domain_min),
@@ -537,7 +597,7 @@ struct grid_config_t {
         );
     }
     
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("resolution", resolution),
             field("domain_min", domain_min),
@@ -553,7 +613,7 @@ struct simulation_state_t {
     std::vector<particle_t> particles;
     std::vector<double> scalar_field;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("time", time),
             field("iteration", iteration),
@@ -563,7 +623,7 @@ struct simulation_state_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("time", time),
             field("iteration", iteration),
@@ -610,7 +670,7 @@ simulation_state {
 
 ## Deserialization
 
-Deserialization is strict - all fields defined in `serialize_fields()` must be present in the input:
+Deserialization is strict - all fields defined in `fields()` must be present in the input:
 
 ```cpp
 simulation_state_t state;
@@ -700,8 +760,8 @@ These traits allow the driver to be parameterized by archive format:
 
 ```cpp
 // Driver automatically uses correct file extensions and constructs archives
-template<typename Archive>
-void run(const driver_config& cfg, auto state) {
+template<typename Archive, Physics P>
+void run(const config<P>& cfg, driver_state_t& state) {
     // Driver creates: chkpt.0000.h5, chkpt.0001.h5, etc.
 }
 

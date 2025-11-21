@@ -16,14 +16,14 @@ struct boundary_t {
     int type;                    // 0=periodic, 1=outflow, 2=reflecting
     double value;                // boundary value (if applicable)
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("type", type),
             field("value", value)
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("type", type),
             field("value", value)
@@ -38,7 +38,7 @@ struct mesh_t {
     boundary_t boundary_lo;
     boundary_t boundary_hi;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("resolution", resolution),
             field("lower", lower),
@@ -48,7 +48,7 @@ struct mesh_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("resolution", resolution),
             field("lower", lower),
@@ -64,7 +64,7 @@ struct physics_t {
     double cfl;
     std::vector<double> diffusion_coeffs;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("gamma", gamma),
             field("cfl", cfl),
@@ -72,7 +72,7 @@ struct physics_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("gamma", gamma),
             field("cfl", cfl),
@@ -88,7 +88,7 @@ struct source_t {
     double radius;
     double amplitude;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("name", name),
             field("position", position),
@@ -98,7 +98,7 @@ struct source_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("name", name),
             field("position", position),
@@ -116,7 +116,7 @@ struct output_t {
     int checkpoint_interval;
     double timeseries_dt;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("directory", directory),
             field("prefix", prefix),
@@ -126,7 +126,7 @@ struct output_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("directory", directory),
             field("prefix", prefix),
@@ -148,7 +148,7 @@ struct config_t {
     std::vector<source_t> sources;
     output_t output;
 
-    auto serialize_fields() const {
+    auto fields() const {
         return std::make_tuple(
             field("title", title),
             field("description", description),
@@ -162,7 +162,7 @@ struct config_t {
         );
     }
 
-    auto serialize_fields() {
+    auto fields() {
         return std::make_tuple(
             field("title", title),
             field("description", description),

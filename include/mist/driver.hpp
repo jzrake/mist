@@ -12,6 +12,9 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <fstream>
+#include "ascii_writer.hpp"
+#include "serialize.hpp"
 
 namespace mist {
 
@@ -40,9 +43,8 @@ concept Physics = requires(
     { get_time(s, kind) } -> std::same_as<double>;
     { zone_count(s) } -> std::same_as<std::size_t>;
     { timeseries_sample(cfg, s) } -> std::same_as<std::vector<std::pair<std::string, double>>>;
-    { visit([](const char*, auto&) {}, s) } -> std::same_as<void>;
-    { visit([](const char*, auto&) {}, p) } -> std::same_as<void>;
-};
+} && HasConstFields<typename P::state_t>
+  && HasConstFields<typename P::product_t>;
 
 // =============================================================================
 // Time integrators
@@ -156,13 +158,12 @@ struct driver_state_t {
 };
 
 // =============================================================================
-// Driver configuration
+// Driver configuration (physics-agnostic)
 // =============================================================================
 
-template<Physics P>
-struct driver_config {
-    typename P::config_t physics;
+namespace driver {
 
+struct config_t {
     int rk_order = 2;
     double cfl = 0.4;
 
@@ -184,10 +185,78 @@ struct driver_config {
     double timeseries_interval = 0.01;
     int timeseries_interval_kind = 0;
     std::string timeseries_scheduling = "exact";
+
+    auto fields() const {
+        return std::make_tuple(
+            field("rk_order", rk_order),
+            field("cfl", cfl),
+            field("t_final", t_final),
+            field("max_iter", max_iter),
+            field("message_interval", message_interval),
+            field("message_interval_kind", message_interval_kind),
+            field("message_scheduling", message_scheduling),
+            field("checkpoint_interval", checkpoint_interval),
+            field("checkpoint_interval_kind", checkpoint_interval_kind),
+            field("checkpoint_scheduling", checkpoint_scheduling),
+            field("products_interval", products_interval),
+            field("products_interval_kind", products_interval_kind),
+            field("products_scheduling", products_scheduling),
+            field("timeseries_interval", timeseries_interval),
+            field("timeseries_interval_kind", timeseries_interval_kind),
+            field("timeseries_scheduling", timeseries_scheduling)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("rk_order", rk_order),
+            field("cfl", cfl),
+            field("t_final", t_final),
+            field("max_iter", max_iter),
+            field("message_interval", message_interval),
+            field("message_interval_kind", message_interval_kind),
+            field("message_scheduling", message_scheduling),
+            field("checkpoint_interval", checkpoint_interval),
+            field("checkpoint_interval_kind", checkpoint_interval_kind),
+            field("checkpoint_scheduling", checkpoint_scheduling),
+            field("products_interval", products_interval),
+            field("products_interval_kind", products_interval_kind),
+            field("products_scheduling", products_scheduling),
+            field("timeseries_interval", timeseries_interval),
+            field("timeseries_interval_kind", timeseries_interval_kind),
+            field("timeseries_scheduling", timeseries_scheduling)
+        );
+    }
+};
+
+} // namespace driver
+
+// =============================================================================
+// Combined configuration (driver + physics)
+// =============================================================================
+
+template<Physics P>
+struct config {
+    driver::config_t driver;
+    typename P::config_t physics;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("driver", driver),
+            field("physics", physics)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("driver", driver),
+            field("physics", physics)
+        );
+    }
 };
 
 // =============================================================================
-// Output functions (user implements these)
+// Output functions
 // =============================================================================
 
 inline void write_iteration_message(const std::string& message) {
@@ -195,12 +264,49 @@ inline void write_iteration_message(const std::string& message) {
 }
 
 template<Physics P>
-void write_checkpoint(int output_num, const typename P::state_t& state, const driver_state_t& driver_state);
+void write_checkpoint(int output_num, const typename P::state_t& state, const driver_state_t& driver_state) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "chkpt.%04d.txt", output_num);
+    std::ofstream file(filename);
+    ascii_writer writer(file);
+
+    writer.begin_group("checkpoint");
+
+    writer.begin_group("driver_state");
+    writer.write_scalar("iteration", driver_state.iteration);
+    writer.write_scalar("message_count", driver_state.message_count);
+    writer.write_scalar("checkpoint_count", driver_state.checkpoint_count);
+    writer.write_scalar("products_count", driver_state.products_count);
+    writer.write_scalar("timeseries_count", driver_state.timeseries_count);
+    writer.write_scalar("next_message_time", driver_state.next_message_time);
+    writer.write_scalar("next_checkpoint_time", driver_state.next_checkpoint_time);
+    writer.write_scalar("next_products_time", driver_state.next_products_time);
+    writer.write_scalar("next_timeseries_time", driver_state.next_timeseries_time);
+    writer.end_group();
+
+    serialize(writer, "state", state);
+
+    // Write timeseries data
+    writer.begin_group("timeseries");
+    for (const auto& [name, values] : driver_state.timeseries_data) {
+        writer.write_array(name.c_str(), values);
+    }
+    writer.end_group();
+
+    writer.end_group();
+}
 
 template<Physics P>
-void write_products(int output_num, const typename P::state_t& state, const typename P::product_t& product);
+void write_products(int output_num, const typename P::state_t& state, const typename P::product_t& product) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "prods.%04d.txt", output_num);
+    std::ofstream file(filename);
+    ascii_writer writer(file);
 
-inline void write_timeseries(const std::vector<std::pair<std::string, std::vector<double>>>& timeseries_data);
+    serialize(writer, "products", product);
+}
+
+
 
 // =============================================================================
 // Helpers
@@ -235,26 +341,28 @@ inline double get_wall_time() {
 // =============================================================================
 
 template<Physics P>
-typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_state) {
+typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
     using state_t = typename P::state_t;
+    const auto& drv = cfg.driver;
+    const auto& phys = cfg.physics;
 
     auto rk_step = [&](const state_t& s, double dt) -> state_t {
-        switch (cfg.rk_order) {
-            case 1: return rk1_step<P>(cfg.physics, s, dt);
-            case 2: return rk2_step<P>(cfg.physics, s, dt);
-            case 3: return rk3_step<P>(cfg.physics, s, dt);
+        switch (drv.rk_order) {
+            case 1: return rk1_step<P>(phys, s, dt);
+            case 2: return rk2_step<P>(phys, s, dt);
+            case 3: return rk3_step<P>(phys, s, dt);
             default: throw std::runtime_error("rk_order must be 1, 2, or 3");
         }
     };
 
-    auto state = initial_state(cfg.physics);
+    auto state = initial_state(phys);
 
     // Initialize scheduling on first run
     if (driver_state.iteration == 0) {
-        driver_state.next_message_time = cfg.message_interval;
-        driver_state.next_checkpoint_time = cfg.checkpoint_interval;
-        driver_state.next_products_time = cfg.products_interval;
-        driver_state.next_timeseries_time = cfg.timeseries_interval;
+        driver_state.next_message_time = drv.message_interval;
+        driver_state.next_checkpoint_time = drv.checkpoint_interval;
+        driver_state.next_products_time = drv.products_interval;
+        driver_state.next_timeseries_time = drv.timeseries_interval;
     }
 
     // Session state
@@ -263,9 +371,9 @@ typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_stat
 
     // Iteration message output
     auto message_output = scheduled_output<state_t>(
-        cfg.message_interval,
-        cfg.message_interval_kind,
-        parse_scheduling_policy(cfg.message_scheduling),
+        drv.message_interval,
+        drv.message_interval_kind,
+        parse_scheduling_policy(drv.message_scheduling),
         &driver_state.next_message_time,
         &driver_state.message_count,
         [&](const state_t& s) {
@@ -296,9 +404,9 @@ typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_stat
 
     // Checkpoint output
     auto checkpoint_output = scheduled_output<state_t>(
-        cfg.checkpoint_interval,
-        cfg.checkpoint_interval_kind,
-        parse_scheduling_policy(cfg.checkpoint_scheduling),
+        drv.checkpoint_interval,
+        drv.checkpoint_interval_kind,
+        parse_scheduling_policy(drv.checkpoint_scheduling),
         &driver_state.next_checkpoint_time,
         &driver_state.checkpoint_count,
         [&](const state_t& s) {
@@ -307,25 +415,24 @@ typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_stat
 
     // Product output
     auto products_output = scheduled_output<state_t>(
-        cfg.products_interval,
-        cfg.products_interval_kind,
-        parse_scheduling_policy(cfg.products_scheduling),
+        drv.products_interval,
+        drv.products_interval_kind,
+        parse_scheduling_policy(drv.products_scheduling),
         &driver_state.next_products_time,
         &driver_state.products_count,
         [&](const state_t& s) {
-            write_products<P>(driver_state.products_count, s, get_product(cfg.physics, s));
+            write_products<P>(driver_state.products_count, s, get_product(phys, s));
         });
 
     // Timeseries output
     auto timeseries_output = scheduled_output<state_t>(
-        cfg.timeseries_interval,
-        cfg.timeseries_interval_kind,
-        parse_scheduling_policy(cfg.timeseries_scheduling),
+        drv.timeseries_interval,
+        drv.timeseries_interval_kind,
+        parse_scheduling_policy(drv.timeseries_scheduling),
         &driver_state.next_timeseries_time,
         &driver_state.timeseries_count,
         [&](const state_t& s) {
-            accumulate_timeseries_sample(driver_state, timeseries_sample(cfg.physics, s));
-            write_timeseries(driver_state.timeseries_data);
+            accumulate_timeseries_sample(driver_state, timeseries_sample(phys, s));
         });
 
     // Collect outputs
@@ -351,10 +458,10 @@ typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_stat
     while (true) {
         double t0 = get_time(state, 0);
 
-        if (t0 >= cfg.t_final) break;
-        if (cfg.max_iter > 0 && driver_state.iteration >= cfg.max_iter) break;
+        if (t0 >= drv.t_final) break;
+        if (drv.max_iter > 0 && driver_state.iteration >= drv.max_iter) break;
 
-        double dt = cfg.cfl * courant_time(cfg.physics, state);
+        double dt = drv.cfl * courant_time(phys, state);
         double t1 = t0 + dt;
 
         for (auto& output : outputs) {
@@ -374,7 +481,7 @@ typename P::state_t run(const driver_config<P>& cfg, driver_state_t& driver_stat
 }
 
 template<Physics P>
-typename P::state_t run(const driver_config<P>& cfg) {
+typename P::state_t run(const config<P>& cfg) {
     driver_state_t driver_state;
     return run(cfg, driver_state);
 }
