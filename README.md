@@ -423,9 +423,10 @@ concept Archive = requires(A& ar, const char* name, double value) {
 The framework automatically handles:
 
 1. **Scalars**: `int`, `float`, `double`, and other arithmetic types
-2. **Static vectors**: `vec_t<T, N>` where `T` is arithmetic
-3. **Dynamic vectors**: `std::vector<T>` where `T` is serializable
-4. **User-defined types**: Any type with `serialize_fields()` method
+2. **Strings**: `std::string` (quoted with escape sequences)
+3. **Static vectors**: `vec_t<T, N>` where `T` is arithmetic
+4. **Dynamic vectors**: `std::vector<T>` where `T` is serializable
+5. **User-defined types**: Any type with `serialize_fields()` method
 
 ## Making Types Serializable
 
@@ -469,18 +470,24 @@ The ASCII archive produces human-readable output with the following formatting r
    iteration = 42
    ```
 
-2. **Static vectors** (`vec_t<T, N>`): Inline comma-separated arrays
+2. **Strings**: `name = "value"` (with escape sequences `\"`, `\\`, `\n`, `\t`, `\r`)
+   ```
+   title = "Blast Wave Simulation"
+   path = "output/data"
+   ```
+
+3. **Static vectors** (`vec_t<T, N>`): Inline comma-separated arrays
    ```
    position = [0.1, 0.2, 0.15]
    velocity = [1.5, -0.3, 0.0]
    ```
 
-3. **Dynamic vectors of scalars** (`std::vector<T>` where `T` is arithmetic): Inline comma-separated arrays
+4. **Dynamic vectors of scalars** (`std::vector<T>` where `T` is arithmetic): Inline comma-separated arrays
    ```
    scalar_field = [300.0, 305.2, 298.5, 302.1]
    ```
 
-4. **Dynamic vectors of compounds** (`std::vector<T>` where `T` is user-defined): Multi-line blocks
+5. **Dynamic vectors of compounds** (`std::vector<T>` where `T` is user-defined): Multi-line blocks
    ```
    particles {
        {
@@ -498,7 +505,7 @@ The ASCII archive produces human-readable output with the following formatting r
    }
    ```
 
-5. **Nested structures**: Multi-line with indentation
+6. **Nested structures**: Multi-line with indentation
    ```
    grid {
        resolution = [64, 64, 32]

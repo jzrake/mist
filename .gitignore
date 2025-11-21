@@ -6,10 +6,7 @@
 *.exe
 
 # Example executables
-examples/*/advection-1d
-examples/*/burgers-1d
-examples/*/euler-2d
-examples/*/wave-3d-gpu
+examples/advection-1d/advection-1d
 
 # Output data files
 *.dat
