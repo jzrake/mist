@@ -7,6 +7,7 @@
 
 # Example executables
 examples/advection-1d/advection-1d
+examples/config-reader/config-reader
 
 # Output data files
 *.dat
@@ -32,7 +33,6 @@ install_manifest.txt
 # Compilation database
 compile_commands.json
 
-# Test outputs
-test_*
-tests/test-*
-!tests/test-*.cpp
+# Test executables
+tests/test_*
+!tests/test_*.cpp
